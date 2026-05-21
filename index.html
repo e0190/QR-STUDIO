@@ -396,7 +396,11 @@ function buildContent() {
   const g = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
   switch(type) {
     case 'text':  return g('f-text');
-    case 'url':   return g('f-url');
+    case 'url': {
+      let url = g('f-url');
+      if(url && !/^https?:\/\//i.test(url) && !/^[a-z][a-z0-9+\-.]*:\/\//i.test(url)) url = 'https://' + url;
+      return url;
+    }
     case 'email': {
       let s = `mailto:${g('f-email')}`;
       const sub = g('f-subject'), body = g('f-body');
