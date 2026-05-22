@@ -368,17 +368,42 @@ const fieldTemplates = {
     <div class="field"><div class="label">Website</div><input type="text" id="f-vweb" placeholder="https://acme.com"/></div>`,
 
   geo: () => `
+    <div class="field">
+      <div class="label">Address</div>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="f-address" placeholder="1600 Amphitheatre Pkwy, Mountain View, CA" style="flex:1;"/>
+        <button onclick="geocodeAddress()" id="geo-lookup-btn" style="padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface2);font-size:13px;font-weight:500;color:var(--ink2);cursor:pointer;white-space:nowrap;font-family:'DM Sans',sans-serif;">Look up</button>
+      </div>
+      <div id="geo-status" style="font-size:12px;color:var(--ink3);margin-top:4px;min-height:16px;"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin:2px 0;">
+      <div style="flex:1;height:1px;background:var(--border);"></div>
+      <span style="font-size:11px;color:var(--ink3);font-family:'DM Mono',monospace;">or enter coords manually</span>
+      <div style="flex:1;height:1px;background:var(--border);"></div>
+    </div>
     <div class="row row-2">
       <div class="field"><div class="label">Latitude</div><input type="text" id="f-lat" placeholder="37.7749"/></div>
       <div class="field"><div class="label">Longitude</div><input type="text" id="f-lng" placeholder="-122.4194"/></div>
     </div>
-    <div class="hint" style="font-size:12px;color:var(--ink3);">Opens in maps app when scanned.</div>`,
+    <div class="hint" style="font-size:12px;color:var(--ink3);">Opens in the maps app when scanned.</div>`,
 
   event: () => `
     <div class="field"><div class="label">Event title</div><input type="text" id="f-etitle" placeholder="Team Meeting"/></div>
     <div class="row row-2">
-      <div class="field"><div class="label">Start date</div><input type="text" id="f-estart" placeholder="20250601T090000"/></div>
-      <div class="field"><div class="label">End date</div><input type="text" id="f-eend" placeholder="20250601T100000"/></div>
+      <div class="field">
+        <div class="label">Start</div>
+        <input type="datetime-local" id="f-estart-dt" style="color-scheme:light;"/>
+      </div>
+      <div class="field">
+        <div class="label">End</div>
+        <input type="datetime-local" id="f-eend-dt" style="color-scheme:light;"/>
+      </div>
+    </div>
+    <div class="field"><div class="label">All-day event?</div>
+      <select id="f-allday" onchange="toggleAllDay(this.value)">
+        <option value="no">No — specific time</option>
+        <option value="yes">Yes — all day</option>
+      </select>
     </div>
     <div class="field"><div class="label">Location (optional)</div><input type="text" id="f-eloc" placeholder="123 Main St, NY"/></div>
     <div class="field"><div class="label">Description (optional)</div><textarea id="f-edesc" rows="2" placeholder="Details…"></textarea></div>`,
@@ -425,16 +450,33 @@ function buildContent() {
       g('f-vweb') ? `URL:${g('f-vweb')}` : '',
       'END:VCARD'
     ].filter(Boolean).join('\n');
-    case 'geo':   return `geo:${g('f-lat')},${g('f-lng')}`;
-    case 'event': return [
-      'BEGIN:VEVENT',
-      `SUMMARY:${g('f-etitle')}`,
-      `DTSTART:${g('f-estart')}`,
-      `DTEND:${g('f-eend')}`,
-      g('f-eloc') ? `LOCATION:${g('f-eloc')}` : '',
-      g('f-edesc') ? `DESCRIPTION:${g('f-edesc')}` : '',
-      'END:VEVENT'
-    ].filter(Boolean).join('\n');
+    case 'geo': {
+      const lat = g('f-lat'), lng = g('f-lng');
+      if(!lat || !lng) { toast('Enter coordinates or look up an address first'); return ''; }
+      return `geo:${lat},${lng}`;
+    }
+    case 'event': {
+      const allday = g('f-allday') === 'yes';
+      const startRaw = g('f-estart-dt'), endRaw = g('f-eend-dt');
+      const fmtDT = raw => {
+        if(!raw) return '';
+        const d = new Date(raw);
+        const pad = n => String(n).padStart(2,'0');
+        if(allday) return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
+        return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
+      };
+      const start = fmtDT(startRaw), end = fmtDT(endRaw);
+      if(!start) { toast('Pick a start date/time'); return ''; }
+      return [
+        'BEGIN:VEVENT',
+        `SUMMARY:${g('f-etitle')}`,
+        start ? (allday ? `DTSTART;VALUE=DATE:${start}` : `DTSTART:${start}`) : '',
+        end   ? (allday ? `DTEND;VALUE=DATE:${end}`   : `DTEND:${end}`)       : '',
+        g('f-eloc')  ? `LOCATION:${g('f-eloc')}`    : '',
+        g('f-edesc') ? `DESCRIPTION:${g('f-edesc')}` : '',
+        'END:VEVENT'
+      ].filter(Boolean).join('\n');
+    }
   }
   return '';
 }
@@ -658,6 +700,48 @@ function shareQR() {
     try { await navigator.share({title:'QR Code',files:[file]}); }
     catch(e) { if(e.name!=='AbortError') toast('Share failed'); }
   });
+}
+
+// ── Geocode address ──────────────────────────────────
+async function geocodeAddress() {
+  const addr = document.getElementById('f-address');
+  const status = document.getElementById('geo-status');
+  const btn = document.getElementById('geo-lookup-btn');
+  if(!addr || !addr.value.trim()) { if(status) status.textContent = 'Enter an address first.'; return; }
+  if(status) status.textContent = 'Looking up…';
+  if(btn) btn.disabled = true;
+  try {
+    const query = encodeURIComponent(addr.value.trim());
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${query}&format=json&limit=1`);
+    const data = await res.json();
+    if(data && data.length > 0) {
+      const { lat, lon, display_name } = data[0];
+      document.getElementById('f-lat').value = parseFloat(lat).toFixed(6);
+      document.getElementById('f-lng').value = parseFloat(lon).toFixed(6);
+      if(status) { status.style.color = 'var(--accent)'; status.textContent = '✓ ' + display_name.split(',').slice(0,3).join(','); }
+      generate();
+    } else {
+      if(status) { status.style.color = '#e11d48'; status.textContent = 'Address not found. Try being more specific.'; }
+    }
+  } catch(e) {
+    if(status) { status.style.color = '#e11d48'; status.textContent = 'Lookup failed. Check your connection.'; }
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+// ── Toggle all-day event ──────────────────────────────
+function toggleAllDay(val) {
+  const startEl = document.getElementById('f-estart-dt');
+  const endEl = document.getElementById('f-eend-dt');
+  if(!startEl || !endEl) return;
+  if(val === 'yes') {
+    startEl.type = 'date';
+    endEl.type = 'date';
+  } else {
+    startEl.type = 'datetime-local';
+    endEl.type = 'datetime-local';
+  }
 }
 
 // ── Toast ─────────────────────────────────────────────
